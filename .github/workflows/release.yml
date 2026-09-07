@@ -1,0 +1,54 @@
+# Publishes the downloadable binaries.
+#
+# It calls scripts/build-release.sh rather than repeating the target matrix here:
+# a build matrix written twice drifts, and the copy that drifts is the one nobody
+# runs by hand.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # So a release can be cut without pushing a tag, and so the build can be proven
+  # green before anyone tags anything.
+  workflow_dispatch:
+
+permissions:
+  # Least privilege: creating a release needs to write contents and nothing else.
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read from go.mod so this never becomes a second, stale copy of the
+          # Go version.
+          go-version-file: go.mod
+
+      - name: Test before shipping
+        run: |
+          go vet ./...
+          go test -race ./...
+          gofmt -l . | tee /dev/stderr | (! read)
+
+      - name: Build every platform
+        run: ./scripts/build-release.sh "${GITHUB_REF_NAME:-dev}"
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+
+      - name: Keep the binaries when there is no tag
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgconv-binaries
+          path: dist/

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>imgconv</title>
+<style>/*__STYLE__*/</style>
+</head>
+<body>
+<div class="backdrop" aria-hidden="true">
+  <span class="shape shape-ring"></span>
+  <span class="shape shape-square"></span>
+  <span class="shape shape-bar"></span>
+</div>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="2" y="2" width="18" height="18" rx="4" class="mark-back"/>
+      <rect x="12" y="12" width="18" height="18" rx="4" class="mark-front"/>
+    </svg>
+    <span class="wordmark">imgconv</span>
+  </div>
+  <button type="button" id="quit" class="ghost">Encerrar</button>
+</header>
+
+<main>
+  <section class="panel" aria-labelledby="h-files">
+    <div class="panel-head">
+      <h2 id="h-files">Arquivos</h2>
+      <button type="button" id="select-all" class="ghost" disabled>Selecionar todas</button>
+    </div>
+
+    <div class="pickbar">
+      <button type="button" id="pick-files" class="primary">
+        <span id="pick-label">Selecionar arquivos</span>
+        <svg viewBox="0 0 24 24" class="ico" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+        </svg>
+      </button>
+    </div>
+    <p class="hint" id="pick-note" hidden></p>
+
+    <p id="state-loading" class="state">Lendo a pasta...</p>
+    <p id="state-empty" class="state" hidden>
+      Nenhum arquivo ainda. Clique em <strong>Selecionar arquivos</strong> para
+      escolher no explorador do seu sistema.
+    </p>
+    <p id="state-error" class="state state-error" hidden></p>
+
+    <ul id="files" class="rows" hidden></ul>
+  </section>
+
+  <section class="panel" aria-labelledby="h-target">
+    <div class="panel-head"><h2 id="h-target">Converter para</h2></div>
+    <div id="formats" class="chips" role="radiogroup" aria-labelledby="h-target"></div>
+
+    <div class="options">
+      <label id="quality-wrap">
+        <span class="lbl">Qualidade <output id="quality-out">85</output></span>
+        <input type="range" id="quality" min="1" max="100" value="85">
+      </label>
+      <label>
+        <span class="lbl">Largura <span class="hint">px</span></span>
+        <input type="number" id="width" min="1" placeholder="auto">
+      </label>
+      <label>
+        <span class="lbl">Altura <span class="hint">px</span></span>
+        <input type="number" id="height" min="1" placeholder="auto">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="force">
+        <span class="lbl">Substituir arquivo existente</span>
+      </label>
+    </div>
+
+    <p class="note">
+      O arquivo convertido e salvo <strong>na mesma pasta do original</strong>, com o
+      mesmo nome e a nova extensao. <strong>O original nunca e alterado.</strong>
+    </p>
+
+    <div class="actionbar">
+      <p class="hint" id="selection">Nenhum arquivo selecionado.</p>
+      <button id="convert" class="primary" disabled>
+        Converter <span class="arrow" aria-hidden="true">&#8594;</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="panel" id="results-section" hidden aria-labelledby="h-results">
+    <div class="panel-head">
+      <h2 id="h-results">Resultado</h2>
+      <button type="button" id="clear-results" class="ghost">Limpar</button>
+    </div>
+    <ul id="results" class="rows"></ul>
+  </section>
+</main>
+
+<div id="stopped" class="stopped" hidden>
+  <p><strong>imgconv encerrado.</strong> Pode fechar esta aba.</p>
+</div>
+<script>/*__SCRIPT__*/</script>
+</body>
+</html>

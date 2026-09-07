@@ -1,0 +1,264 @@
+/* Every colour, radius and spacing value used below is a token declared here.
+   A literal written inside a rule is what makes a theme stop being changeable.
+
+   This design commits to dark. That is deliberate rather than an omission: the
+   product is a black canvas with one warm accent, and a light counterpart would
+   be a second identity to keep in step, not a feature. Depth therefore comes
+   from LUMINANCE — surfaces get lighter as they come forward — and never from a
+   shadow, which is invisible on black anyway. */
+:root {
+  color-scheme: dark;
+
+  --bg:        #08080a;
+  --surface-1: #121218;
+  --surface-2: #1b1b23;
+  --surface-3: #24242e;
+  --border:    #2c2c38;
+  --border-lit:#3d3d4c;
+
+  --text:  #f3f2f6;
+  --muted: #a09daf;
+
+  /* One accent, and it means exactly one thing: "this is the action". */
+  --accent:     #ff5c38;
+  --accent-lit: #ff7a5c;
+  --accent-ink: #0a0a0c;
+
+  --ok:   #5ee49a;
+  --warn: #ffc75c;
+  --err:  #ff8080;
+
+  /* The backdrop is monochrome on purpose: the operator asked for black, and a
+     coloured glow behind a photo grid competes with the photos, which are the
+     only thing on this page that should carry colour. */
+  --line: #ffffff10;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+
+  --gap: 12px;
+  --pad: 18px;
+}
+
+* { box-sizing: border-box; }
+
+/* 🔴 The hidden attribute only wins when nothing overrides it. The browser hides
+   [hidden] with display:none from its OWN stylesheet, and any author rule that
+   sets display — .rows is flex, label is block, .stopped is grid — beats it. The
+   page shipped with "imgconv encerrado" covering everything on first load for
+   exactly that reason. This one line is what makes el.hidden = true mean it. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  padding: clamp(16px, 3vw, 40px);
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── the geometric backdrop ────────────────────────────────────────────────
+   Pure CSS on purpose: an image would have to be embedded in the binary, and
+   this ships as one file. It sits behind everything and is inert to pointers. */
+.backdrop { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.backdrop::before {
+  content: ""; position: absolute; inset: 0;
+  background-image:
+    linear-gradient(to right, var(--line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 30%, transparent 100%);
+}
+.shape { position: absolute; border: 1px solid var(--line); }
+.shape-ring   { width: 300px; height: 300px; border-radius: 50%; top: 12%;  right: 6%; }
+.shape-square { width: 150px; height: 150px; border-radius: var(--r-lg); bottom: 16%; left: 5%; transform: rotate(18deg); }
+.shape-bar    { width: 220px; height: 6px;  border-radius: 99px; top: 46%; left: 38%; transform: rotate(-24deg); }
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); flex-wrap: wrap; margin-bottom: calc(var(--pad) * 1.4); }
+.brand { display: flex; align-items: center; gap: 10px; }
+.mark { width: 26px; height: 26px; }
+.mark-back  { fill: none; stroke: var(--border-lit); stroke-width: 2; }
+.mark-front { fill: none; stroke: var(--accent); stroke-width: 2; }
+.wordmark { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.path { margin: 0; color: var(--muted); font-size: 13px; word-break: break-all; }
+
+/* ── panels: depth by luminance, radii concentric ───────────────────────── */
+main { max-width: 900px; margin: 0 auto; }
+.panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--pad);
+  margin-bottom: var(--pad);
+}
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); margin-bottom: var(--gap); }
+h2 { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+
+.state { color: var(--muted); margin: 0; padding: var(--gap) 0; }
+.state-error { color: var(--err); }
+code { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 1px 5px; font-size: .9em; }
+
+/* ── file rows ──────────────────────────────────────────────────────────── */
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+/* The row is a button and the remove control is another button, so they cannot
+   nest. The list item is the box; the two controls sit inside it. */
+.rowwrap { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px;
+           background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); }
+.rowwrap:has(.row[aria-pressed="true"]) { border-color: var(--accent); }
+.rowwrap .row { background: transparent; border: 0; border-radius: var(--r-md); }
+.rowwrap .row:hover { background: transparent; }
+.drop {
+  width: 34px; height: 34px; margin-right: 8px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--muted); font-size: 17px; line-height: 1;
+  transition: color .15s ease, border-color .15s ease;
+}
+.drop:hover { color: var(--err); border-color: var(--err); }
+.drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 48px 1fr auto auto;
+  align-items: center;
+  gap: var(--gap);
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.row:hover { background: var(--surface-3); border-color: var(--border-lit); }
+.row:active { background: var(--surface-2); }
+.row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row[aria-pressed="true"] { border-color: var(--accent); background: var(--surface-3); }
+.row .thumb { width: 48px; height: 40px; object-fit: contain; border-radius: var(--r-sm); background: var(--bg); display: block; }
+.row .name { font-size: 14px; word-break: break-all; }
+.row .size { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.row .tick {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--border-lit);
+  display: grid; place-items: center;
+  font-size: 13px; color: transparent;
+}
+.row[aria-pressed="true"] .tick { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* ── format chips ───────────────────────────────────────────────────────── */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: var(--pad); }
+.chip {
+  padding: 8px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+.chip:hover { background: var(--surface-3); border-color: var(--border-lit); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* ── options ────────────────────────────────────────────────────────────── */
+.options { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: var(--pad); }
+label { display: block; }
+.lbl { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+input[type="number"] {
+  width: 100%; padding: 8px 10px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  font: inherit;
+}
+input[type="number"]:hover { border-color: var(--border-lit); }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.check { display: flex; align-items: center; gap: 8px; align-self: end; }
+.check .lbl { margin: 0; }
+.check input { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* ── buttons ────────────────────────────────────────────────────────────── */
+.actionbar { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); flex-wrap: wrap; }
+button { font: inherit; cursor: pointer; }
+.primary {
+  padding: 12px 26px;
+  background: var(--accent); color: var(--accent-ink);
+  border: 1px solid var(--accent); border-radius: var(--r-md);
+  font-weight: 700; font-size: 15px;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: background-color .15s ease, border-color .15s ease, opacity .15s ease;
+}
+.primary:hover:not(:disabled) { background: var(--accent-lit); border-color: var(--accent-lit); }
+.primary:active:not(:disabled) { background: var(--accent); }
+/* The FILL dims, not only the text: darkening letters alone leaves a button that
+   still reads as pressable and fails contrast. */
+.primary:disabled { background: var(--surface-3); border-color: var(--border); color: var(--muted); cursor: not-allowed; }
+.arrow { font-size: 17px; line-height: 1; }
+
+.ghost {
+  padding: 6px 12px;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  font-size: 12px;
+  transition: color .15s ease, border-color .15s ease;
+}
+.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--border-lit); }
+.ghost:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ── results ────────────────────────────────────────────────────────────── */
+#results li { padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); font-size: 14px; word-break: break-all; }
+#results li.r-ok   { border-left: 3px solid var(--ok); }
+#results li.r-warn { border-left: 3px solid var(--warn); }
+#results li.r-err  { border-left: 3px solid var(--err); }
+#results .r-detail { display: block; margin-top: 3px; font-size: 13px; color: var(--muted); }
+#results li.r-err .r-detail { color: var(--err); }
+#results li.r-warn .r-detail { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0.01ms !important; }
+}
+
+/* ── the button that opens the system's own file dialog ─────────────────────
+   It leads this panel, so it takes the accent: it is the first thing an operator
+   who does not want to browse should find. */
+.pickbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: var(--gap); }
+.ico { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+
+/* ── where the result goes ──────────────────────────────────────────────────
+   This sentence exists because the page stopped showing the folder. That was the
+   right call — a directory tree on screen reads as the tool rummaging through the
+   disk — but it took with it the one fact the operator needs at the moment they
+   press Convert. It sits next to the button for that reason, and it is quiet
+   rather than alarming: it states a guarantee, it does not warn about a risk. */
+.note {
+  margin: 0 0 var(--gap);
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 13px;
+}
+.note strong { color: var(--text); font-weight: 600; }
+
+/* Shown after the server is stopped. It covers the page because everything under
+   it is now dead: leaving a live-looking interface over a server that is gone
+   would let the operator click things that silently do nothing. */
+.stopped {
+  position: fixed; inset: 0; z-index: 10;
+  display: grid; place-items: center;
+  background: var(--bg);
+  color: var(--muted);
+  text-align: center;
+  padding: var(--pad);
+}
+.stopped strong { color: var(--text); }

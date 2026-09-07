@@ -1,0 +1,37 @@
+# ── The agent toolchain: present on this machine, never committed ──────────────
+# The split is by AUDIENCE, not by tool.
+#
+# AGENTS.md is VERSIONED and public: it is the cross-vendor contract for the code
+# itself — the layer arrow, the format registry, the red zone, the testing rule and
+# the traps already paid for. Anyone who clones this repository, human or agent,
+# needs it, and it depends on no tool being installed.
+#
+# Everything below is about THIS MACHINE's setup rather than about the code: which
+# agents are reachable, which models, which skills exist, how delegation works.
+# It would be noise in a public repository and it goes stale the moment someone
+# else clones it.
+#
+# The agent-specific file imports AGENTS.md and holds only the machine-specific half.
+.claude/
+.crew/
+CLAUDE.md
+START.md
+.mcp.json
+.mcp.json.example
+.crew-kit-config
+.crew-kit-config.example
+
+# .github/ is NOT ignored — the PR template stays with the repository.
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+# The build output. Added because `go build -o imgconv` drops it right here and a
+# committed binary is noise; delete this line if you ever want to ship one.
+/imgconv
+/imgconv.exe
+
+# The release build output. scripts/build-release.sh writes here.
+/dist/
+
+# Test binaries and coverage
+*.test
+*.out
