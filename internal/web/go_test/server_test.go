@@ -223,3 +223,168 @@ func TestResolve_ShouldRefuseASiblingDirectoryWhoseNameStartsWithTheRoot(t *test
 		t.Errorf("resolved into the sibling directory: %q — a prefix test without the separator", got)
 	}
 }
+
+// Reloading the page must work.
+//
+// THE BUG THIS CAME FROM: the token arrives in the URL, and app.js strips it from
+// the address bar so it does not end up in history, bookmarks or a screenshot.
+// That is right — and it meant a plain F5 sent a request with no token at all and
+// got "forbidden". The operator hit it immediately.
+//
+// The token now also rides in a cookie, set when the page is served to somebody
+// who proved they had it. SameSite=Strict is what keeps that safe: a browser does
+// not attach a strict cookie to a request started by another site, so the page on
+// some other tab still cannot reach a handler here. The Origin check is unchanged
+// behind it, and the token in the URL bar is still gone.
+func TestPage_ShouldSetACookieSoReloadingWorks(t *testing.T) {
+	s := newServer(t, t.TempDir())
+
+	req := httptest.NewRequest(http.MethodGet, "/?t="+s.Token(), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("no cookie was set: reloading the page will be refused")
+	}
+	c := cookies[0]
+	if c.Value != s.Token() {
+		t.Errorf("cookie carries %q, want the run token", c.Value)
+	}
+	if c.SameSite != http.SameSiteStrictMode {
+		t.Error("the cookie is not SameSite=Strict, so another site could make the browser send it")
+	}
+	if !c.HttpOnly {
+		t.Error("the cookie is readable by script for no reason; nothing in the page needs to read it")
+	}
+}
+
+func TestServer_ShouldAcceptARequestCarryingOnlyTheCookie(t *testing.T) {
+	s := newServer(t, t.TempDir())
+
+	// Exactly what a reload sends: no query, no header, just the cookie.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "imgconv_token", Value: s.Token()})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusForbidden {
+		t.Error("a reload was refused; this is the forbidden the operator saw on F5")
+	}
+}
+
+func TestServer_ShouldRefuseAWrongCookie(t *testing.T) {
+	s := newServer(t, t.TempDir())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.AddCookie(&http.Cookie{Name: "imgconv_token", Value: "nao-e-o-token"})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 — a cookie is not a pass, it still has to be right", rec.Code)
+	}
+}
+
+// The cookie must not weaken the guard it rides behind.
+func TestServer_ShouldStillRefuseAForeignOriginHoldingTheCookie(t *testing.T) {
+	s := newServer(t, t.TempDir())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.AddCookie(&http.Cookie{Name: "imgconv_token", Value: s.Token()})
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 — the cookie must not become a way around the origin check", rec.Code)
+	}
+}
+
+// The hole the cookie opened, and the header that closes it.
+//
+// A cookie is scoped to a HOST, not a port, and SameSite counts ports as the same
+// site. So once the page had a cookie, any other page served from 127.0.0.1 — a
+// dev server, another local app — could embed
+// <img src="http://127.0.0.1:OURS/api/thumb?f=1">, and the browser would attach
+// our cookie. An <img> sends no Origin, and an absent Origin was allowed, so both
+// guards passed. Confirmed before the fix: HTTP 200, image/png.
+//
+// Sec-Fetch-Site is what tells those apart, and it is sent by the browser rather
+// than the page: "same-origin" for our own fetches, "none" for a typed URL or a
+// bookmark, and "same-site" for exactly the neighbour-port case that had no other
+// signal. The first two are allowed; the rest are not.
+func TestServer_ShouldRefuseARequestFromANeighbouringPortOnLoopback(t *testing.T) {
+	s := newServer(t, t.TempDir())
+
+	// Exactly what an <img> on http://127.0.0.1:9999 produces: our cookie, no
+	// Origin, and the browser's own account of where it came from.
+	req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+	req.AddCookie(&http.Cookie{Name: s.CookieName(), Value: s.Token()})
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 — a page on another local port reached a handler", rec.Code)
+	}
+}
+
+func TestServer_ShouldStillServeItsOwnPage(t *testing.T) {
+	s := newServer(t, t.TempDir())
+
+	for _, site := range []string{"same-origin", "none", ""} {
+		req := httptest.NewRequest(http.MethodGet, "/api/files", nil)
+		req.AddCookie(&http.Cookie{Name: s.CookieName(), Value: s.Token()})
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+
+		// A guard that refuses everything passes the test above and is useless.
+		if rec.Code == http.StatusForbidden {
+			t.Errorf("Sec-Fetch-Site %q was refused; that is the page itself, or a typed URL", site)
+		}
+	}
+}
+
+// Two runs at once must not share a cookie. They are on the same host, and a
+// cookie cannot be scoped to a port — so the NAME carries it.
+func TestServer_ShouldNotShareItsCookieWithAnotherRun(t *testing.T) {
+	a, b := newServer(t, t.TempDir()), newServer(t, t.TempDir())
+	if err := a.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := b.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	if a.CookieName() == b.CookieName() {
+		t.Errorf("both runs use the cookie %q; the second overwrites the first", a.CookieName())
+	}
+}
+
+// Ids must not be guessable. They are the only thing standing between a request
+// and a file once it is in the allowlist, and "1" is not a secret.
+func TestSelection_ShouldNotHandOutGuessableIds(t *testing.T) {
+	dir := t.TempDir()
+	writePNGAt(t, filepath.Join(dir, "a.png"))
+	writePNGAt(t, filepath.Join(dir, "b.png"))
+	s := newServer(t, dir)
+
+	entries := s.Add([]string{filepath.Join(dir, "a.png"), filepath.Join(dir, "b.png")})
+	for _, e := range entries {
+		if len(e.ID) < 16 {
+			t.Errorf("id %q is short enough to enumerate", e.ID)
+		}
+	}
+	if len(entries) == 2 && entries[1].ID == entries[0].ID {
+		t.Error("two files share an id")
+	}
+}

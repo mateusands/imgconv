@@ -58,7 +58,14 @@ func encodeInto(out *os.File, target string, img image.Image, f Format, opts Opt
 		os.Remove(target)
 		return err
 	}
-	return out.Close()
+	// The close matters as much as the encode. A full disk buffers the bytes,
+	// lets Encode return nil, and only fails on the flush — which would leave a
+	// truncated file that looks like a finished one.
+	if err := out.Close(); err != nil {
+		os.Remove(target)
+		return err
+	}
+	return nil
 }
 
 // replace overwrites a destination that already exists — the --force path.
@@ -66,20 +73,35 @@ func replace(target string, src *Source, img image.Image, f Format, opts Options
 	// Opened WITHOUT O_TRUNC. The file has to survive until it has been compared
 	// with the source; that comparison is the only thing standing between
 	// "--force -o photo.jpg photo.jpg" and an unrecoverable loss.
+	//
+	// A DANGLING SYMLINK reaches here too: the entry exists, so O_EXCL refused it,
+	// and opening it follows the link to nothing. There is no file to compare
+	// against and nothing of the operator's to lose, so the write proceeds — and
+	// os.Rename below replaces the LINK rather than writing through it, which is
+	// what keeps that safe.
+	perm := os.FileMode(0o644)
 	existing, err := os.OpenFile(target, os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	existingInfo, err := existing.Stat()
-	existing.Close()
-	if err != nil {
-		return err
-	}
+	switch {
+	case err == nil:
+		existingInfo, statErr := existing.Stat()
+		existing.Close()
+		if statErr != nil {
+			return statErr
+		}
+		if src != nil && os.SameFile(src.info, existingInfo) {
+			// Same inode. Catches the identical path, a hard link and a symlink
+			// alike — none of which a string comparison of paths can see.
+			return fmt.Errorf("refusing to write over the input file %s", src.path)
+		}
+		// Replacing a file must not widen who can read it: a destination the
+		// operator kept at 0600 comes back at 0600.
+		perm = existingInfo.Mode().Perm()
 
-	if src != nil && os.SameFile(src.info, existingInfo) {
-		// Same inode. Catches the identical path, a hard link and a symlink
-		// alike — none of which a string comparison of paths can see.
-		return fmt.Errorf("refusing to write over the input file %s", src.path)
+	case errors.Is(err, fs.ErrNotExist):
+		// A dangling symlink. Nothing to compare, nothing to lose.
+
+	default:
+		return err
 	}
 
 	// The destination is a real file the operator already had, so it must not be
@@ -100,8 +122,9 @@ func replace(target string, src *Source, img image.Image, f Format, opts Options
 		os.Remove(tmpName)
 		return err
 	}
-	// CreateTemp makes the file 0600; the output should read like any other file.
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	// CreateTemp makes the file 0600. The destination's own permissions are what
+	// the result should have — 0644 only when there was no destination to ask.
+	if err := os.Chmod(tmpName, perm); err != nil {
 		os.Remove(tmpName)
 		return err
 	}

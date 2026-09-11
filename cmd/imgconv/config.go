@@ -46,12 +46,16 @@ func exitCode(err error) int {
 type config struct {
 	// tui is set only when there were no arguments at all.
 	tui bool
-	// ui is set by --ui: the graphical front end, served to the browser.
-	// uiCeiling is the highest directory it may ever reach; uiStart is where the
-	// page opens, and is always inside it.
-	ui        bool
-	uiCeiling string
-	uiStart   string
+	// ui is set by --ui: the graphical front end, served to the browser. uiStart is
+	// only where its file dialog opens.
+	//
+	// There is deliberately no "ceiling" here any more. There used to be, when the
+	// page browsed directories; what bounds the server now is an allowlist of the
+	// files a human chose in that dialog, which lives in internal/web. A field
+	// here claiming to cap anything would describe a guarantee this package does
+	// not provide.
+	ui      bool
+	uiStart string
 	// dir says the input is a directory, which is a batch run into outputDir.
 	// output is empty then, and outputDir is empty for a single file.
 	dir       bool
@@ -150,13 +154,12 @@ func parse(args []string) (config, error) {
 			return config{}, usagef("--ui takes at most one directory, got %d", len(positional))
 		}
 		if len(positional) == 1 {
-			return config{ui: true, uiCeiling: positional[0], uiStart: positional[0]}, nil
+			return config{ui: true, uiStart: positional[0]}, nil
 		}
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		return config{ui: true, uiCeiling: home, uiStart: "."}, nil
+		// The working directory, which is where the operator is standing. Looking
+		// up the home directory here was left over from a "ceiling" this package
+		// no longer has, and its value was computed and thrown away.
+		return config{ui: true, uiStart: "."}, nil
 
 	case len(positional) == 0 && len(given) == 0:
 		return config{tui: true}, nil
@@ -261,6 +264,12 @@ func resolveTarget(given map[string]bool, f *flags) (imageio.Format, error) {
 		ext := filepath.Ext(f.output)
 		byExt, ok := imageio.ByExtension(ext)
 		if !ok {
+			// With --to already given, the extension has nothing left to answer:
+			// complaining that the format is unknown while the operator named it
+			// on the same line reads as the tool not listening.
+			if given["to"] {
+				return target, nil
+			}
 			return target, fmt.Errorf("cannot tell the target format from %q; name it with --to, or use an extension of: %s",
 				f.output, encodableNames())
 		}

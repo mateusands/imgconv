@@ -61,7 +61,7 @@ func TestPick_ShouldListOnlyWhatWasChosen(t *testing.T) {
 		writePNGAt(t, filepath.Join(dir, n))
 	}
 	s := newServer(t, dir)
-	s.SetPicker(func() ([]string, error) {
+	s.SetPicker(func(string) ([]string, error) {
 		return []string{filepath.Join(dir, "escolhida.png")}, nil
 	})
 
@@ -82,10 +82,10 @@ func TestPick_ShouldAddToTheSelectionRatherThanReplaceIt(t *testing.T) {
 	writePNGAt(t, filepath.Join(two, "segunda.png"))
 
 	s := newServer(t, one)
-	s.SetPicker(func() ([]string, error) { return []string{filepath.Join(one, "primeira.png")}, nil })
+	s.SetPicker(func(string) ([]string, error) { return []string{filepath.Join(one, "primeira.png")}, nil })
 	post(t, s, "/api/pick", `{}`)
 
-	s.SetPicker(func() ([]string, error) { return []string{filepath.Join(two, "segunda.png")}, nil })
+	s.SetPicker(func(string) ([]string, error) { return []string{filepath.Join(two, "segunda.png")}, nil })
 	post(t, s, "/api/pick", `{}`)
 
 	got := currentList(t, s)
@@ -102,7 +102,7 @@ func TestSelection_ShouldForgetAFileTheOperatorRemoves(t *testing.T) {
 	dir := t.TempDir()
 	writePNGAt(t, filepath.Join(dir, "some.png"))
 	s := newServer(t, dir)
-	s.SetPicker(func() ([]string, error) { return []string{filepath.Join(dir, "some.png")}, nil })
+	s.SetPicker(func(string) ([]string, error) { return []string{filepath.Join(dir, "some.png")}, nil })
 	post(t, s, "/api/pick", `{}`)
 
 	id := currentList(t, s).Files[0].ID
@@ -147,5 +147,84 @@ func TestThumb_ShouldRefuseAnIdThatWasNeverPicked(t *testing.T) {
 	s := newServer(t, t.TempDir())
 	if rec := get(t, s, "/api/thumb?f=whatever"); rec.Code == http.StatusOK {
 		t.Error("a thumbnail was served for something nobody chose")
+	}
+}
+
+// The operator asked to see what a picked file actually is.
+//
+// A name and a byte count do not answer the question that matters before a
+// conversion — how big is this picture, and what is it really. The second half of
+// that is not rhetorical here: this program decides format by BYTES, so a file
+// named .jpeg can be a PNG, and the list is the only place that difference is
+// visible before something is written.
+//
+// The dimensions are read from the header, never by decoding: doing it the other
+// way would allocate every pixel of every file in the list, on the one screen
+// where a decode bomb is most likely to arrive by accident.
+func TestFiles_ShouldDescribeEachChosenFile(t *testing.T) {
+	dir := t.TempDir()
+	// PNG bytes under a name that claims JPEG.
+	liar := filepath.Join(dir, "mentiroso.jpeg")
+	writePNGAt(t, liar)
+
+	s := newServer(t, dir)
+	s.SetPicker(func(string) ([]string, error) { return []string{liar}, nil })
+	post(t, s, "/api/pick", `{}`)
+
+	var got struct {
+		Files []struct {
+			Name   string `json:"name"`
+			Format string `json:"format"`
+			Width  int    `json:"width"`
+			Height int    `json:"height"`
+			Size   int64  `json:"size"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(get(t, s, "/api/files").Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 {
+		t.Fatalf("expected the one picked file, got %d", len(got.Files))
+	}
+	f := got.Files[0]
+	if f.Format != "png" {
+		t.Errorf("format = %q, want png — the name says jpeg and the bytes decide", f.Format)
+	}
+	// writePNGAt makes a 16x12 image; the helper is the contract for those numbers.
+	if f.Width != 16 || f.Height != 12 {
+		t.Errorf("dimensions = %dx%d, want 16x12", f.Width, f.Height)
+	}
+	if f.Size <= 0 {
+		t.Error("size is still part of the description")
+	}
+}
+
+// A file that cannot be described is still listed. Dropping it would hide a
+// choice the operator made, and the conversion will report the real reason.
+func TestFiles_ShouldStillListAFileItCannotDescribe(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "quebrado.jpg")
+	if err := os.WriteFile(broken, []byte("nao e imagem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, dir)
+	s.SetPicker(func(string) ([]string, error) { return []string{broken}, nil })
+	post(t, s, "/api/pick", `{}`)
+
+	var got struct {
+		Files []struct {
+			Name   string `json:"name"`
+			Format string `json:"format"`
+			Width  int    `json:"width"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(get(t, s, "/api/files").Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0].Name != "quebrado.jpg" {
+		t.Fatalf("the file the operator chose must still appear: %+v", got.Files)
+	}
+	if got.Files[0].Format != "" || got.Files[0].Width != 0 {
+		t.Errorf("nothing is known about it, so nothing should be claimed: %+v", got.Files[0])
 	}
 }

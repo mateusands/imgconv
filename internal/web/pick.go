@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -27,7 +28,7 @@ const pickTimeout = 5 * time.Minute
 //
 // It is a field on Server rather than a package function so a test can supply one:
 // the real thing needs a human and a desktop, and neither belongs in a suite.
-type Picker func() ([]string, error)
+type Picker func(startDir string) ([]string, error)
 
 // SetPicker replaces the dialog. Tests use it; nothing else should.
 func (s *Server) SetPicker(p Picker) {
@@ -42,16 +43,26 @@ func (s *Server) SetPicker(p Picker) {
 // A dialog is launched with exec.Command and no shell, so there is no string for
 // a caller to inject into — the only thing the browser controls is WHICH of the
 // two fixed modes runs.
-func nativePicker() ([]string, error) {
+func nativePicker(startDir string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pickTimeout)
 	defer cancel()
+
+	// startDir is where the dialog opens, and it is the ONLY thing a request
+	// influences here — every other argument is a fixed string, and the value is a
+	// directory this server resolved itself, never a string from the browser.
+	if startDir == "" {
+		startDir = "."
+	}
 
 	var cmd *exec.Cmd
 	switch {
 	case have("kdialog"):
-		cmd = exec.CommandContext(ctx, "kdialog", "--multiple", "--separate-output", "--getopenfilename", ".")
+		cmd = exec.CommandContext(ctx, "kdialog", "--multiple", "--separate-output", "--getopenfilename", startDir)
 	case have("zenity"):
-		cmd = exec.CommandContext(ctx, "zenity", "--file-selection", "--multiple", "--separator", "\n")
+		// zenity wants a trailing separator to read the value as a directory
+		// rather than as a file to preselect.
+		cmd = exec.CommandContext(ctx, "zenity", "--file-selection", "--multiple", "--separator", "\n",
+			"--filename", strings.TrimSuffix(startDir, string(filepath.Separator))+string(filepath.Separator))
 	default:
 		return nil, ErrNoPicker
 	}

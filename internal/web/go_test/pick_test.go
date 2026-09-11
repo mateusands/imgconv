@@ -32,7 +32,7 @@ func TestPick_ShouldChangeNothingWhenTheOperatorCancels(t *testing.T) {
 	dir := t.TempDir()
 	writePNGAt(t, filepath.Join(dir, "ficou.png"))
 	s := newServer(t, dir)
-	s.SetPicker(func() ([]string, error) { return nil, nil })
+	s.SetPicker(func(string) ([]string, error) { return nil, nil })
 
 	rec := post(t, s, "/api/pick", `{}`)
 	if rec.Code != http.StatusOK {
@@ -47,7 +47,7 @@ func TestPick_ShouldChangeNothingWhenTheOperatorCancels(t *testing.T) {
 // this button. The message has to say which, rather than failing silently.
 func TestPick_ShouldExplainWhenNoNativeDialogIsInstalled(t *testing.T) {
 	s := newServer(t, t.TempDir())
-	s.SetPicker(func() ([]string, error) { return nil, ErrNoPicker })
+	s.SetPicker(func(string) ([]string, error) { return nil, ErrNoPicker })
 
 	rec := post(t, s, "/api/pick", `{}`)
 	if rec.Code == http.StatusOK {

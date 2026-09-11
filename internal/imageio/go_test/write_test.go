@@ -228,3 +228,61 @@ func TestWrite_ShouldLeaveDestinationUntouchedWhenForcedEncodeFails(t *testing.T
 	}
 	assertUnchanged(t, target, existing)
 }
+
+// Three gaps an independent review found in this file, each one a case the
+// original tests never reached.
+
+// A dangling symlink is a destination that EXISTS as a directory entry and has
+// nothing behind it. O_EXCL refuses it with EEXIST, so --force sends it to
+// replace() — which opened it O_RDONLY, followed the link to nothing, and failed
+// with ENOENT. The operator passed --force and got "no such file or directory"
+// about a file they were trying to create.
+func TestWrite_ShouldReplaceADanglingSymlinkWhenForced(t *testing.T) {
+	dir := t.TempDir()
+	src, before := writeSourceFile(t, filepath.Join(dir, "in.png"))
+
+	link := filepath.Join(dir, "out.png")
+	if err := os.Symlink(filepath.Join(dir, "nothing-here"), link); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+
+	if err := Write(link, src, testImage(t), pngFormat(t), Options{}, true); err != nil {
+		t.Fatalf("--force must replace a dangling symlink: %v", err)
+	}
+	// Rename replaces the LINK, not whatever it pointed at, so nothing was
+	// created at the dangling target.
+	if _, err := os.Stat(filepath.Join(dir, "nothing-here")); err == nil {
+		t.Error("the write followed the symlink and created its target")
+	}
+	assertUnchanged(t, filepath.Join(dir, "in.png"), before)
+}
+
+// A destination the operator had kept private must not come back world-readable
+// because this program replaced it. CreateTemp makes 0600 and the old code
+// forced 0644 unconditionally.
+func TestWrite_ShouldKeepTheDestinationsPermissionsWhenForced(t *testing.T) {
+	dir := t.TempDir()
+	src, _ := writeSourceFile(t, filepath.Join(dir, "in.png"))
+
+	target := filepath.Join(dir, "private.png")
+	if err := os.WriteFile(target, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Write(target, src, testImage(t), pngFormat(t), Options{}, true); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("permissions became %04o, want 0600 — replacing a file must not widen who can read it", got)
+	}
+}
+
+// NOT TESTED HERE, deliberately: the case where f.Encode succeeds and out.Close
+// then fails — a full disk, where the bytes are buffered and the error only
+// surfaces on the flush. Reaching it from this package would mean exporting
+// machinery that exists for no other reason, so the fix (removing the file when
+// the close fails) is verified by reading write.go rather than by this file.
