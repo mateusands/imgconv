@@ -255,13 +255,19 @@ func TestPage_ShouldServeAStyledPageInOneRequest(t *testing.T) {
 // directory are untouched in server_test.go. They now guard a smaller surface,
 // which is the point of removing a feature rather than hiding its buttons.
 
-// The refusal has to speak the language of the front end the operator is using.
+// The refusal must not carry another front end's vocabulary, and must not carry
+// a path.
 //
 // imageio's message used to end "(pass --force to replace it)", which is sound
 // advice on a command line and nonsense in a browser, where the same choice is a
-// checkbox. A front end that repeats another front end's vocabulary teaches the
-// operator that the message is not really about them.
-func TestConvert_ShouldNotTellABrowserOperatorToPassACommandLineFlag(t *testing.T) {
+// checkbox. It also named the file's absolute path, on a page built to show none.
+//
+// Updated when the wording moved out of Go entirely: this response now reports
+// WHAT failed and sets a flag saying it was an existing file. Naming the control
+// that fixes it belongs to the page, because the control only exists there — so
+// the assertion is on the flag rather than on a sentence, which also means this
+// test survives the interface being translated.
+func TestConvert_ShouldReportAnOverwriteWithoutBorrowingTheCLIsVocabulary(t *testing.T) {
 	root := t.TempDir()
 	writePNGAt(t, filepath.Join(root, "foto.png"))
 	s := newServer(t, root)
@@ -273,8 +279,27 @@ func TestConvert_ShouldNotTellABrowserOperatorToPassACommandLineFlag(t *testing.
 	if strings.Contains(body, "--force") {
 		t.Errorf("the browser was told to pass a command-line flag: %s", body)
 	}
-	if !strings.Contains(strings.ToLower(body), "substituir") {
-		t.Errorf("the refusal must point at the control this operator actually has: %s", body)
+	if strings.Contains(body, root) {
+		t.Errorf("the absolute path reached the browser: %s", body)
+	}
+
+	var got struct {
+		Results []struct {
+			Error  string `json:"error"`
+			Exists bool   `json:"exists"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("expected one result, got %d", len(got.Results))
+	}
+	if !got.Results[0].Exists {
+		t.Error("the one failure the operator can act on is not flagged, so the page cannot say how")
+	}
+	if got.Results[0].Error == "" {
+		t.Error("a failure with no reason tells the operator nothing")
 	}
 }
 
@@ -282,10 +307,9 @@ func TestConvert_ShouldNotTellABrowserOperatorToPassACommandLineFlag(t *testing.
 //
 // It became necessary the moment the folder stopped being shown: the operator
 // picks a file from anywhere on disk and the interface no longer displays a path,
-// so without this sentence there is nothing on screen answering "where does the
-// converted file go" at the moment they press Convert. It also states the
-// guarantee the whole program is built around — the original is not touched —
-// which is worth saying out loud rather than leaving as something to discover.
+// so without this sentence nothing on screen answers "where does the converted
+// file go" at the moment they press Convert. It also states the guarantee the
+// whole program is built around — the original is not touched.
 func TestPage_ShouldSayWhereTheConvertedFileGoes(t *testing.T) {
 	s := newServer(t, t.TempDir())
 
@@ -366,5 +390,36 @@ func TestPage_ShouldForceHiddenToActuallyHide(t *testing.T) {
 	}
 	if !strings.Contains(body, "display: none !important") {
 		t.Error("the [hidden] rule does not outrank the author display rules it exists to beat")
+	}
+}
+
+// Sanitising errors has to cover EVERY handler, and it did not.
+//
+// convertOne ran its failures through browserMessage; handleThumb did not, so a
+// file that would not decode answered with "/home/you/Pictures/broken.jpg: image:
+// unknown format". The page was built to show no path from the operator's disk,
+// and an independent review found it saying one — which is the shape this class
+// of bug always has: the rule was applied where it was being thought about, and
+// nowhere else.
+func TestThumb_ShouldNotLeakAnAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "quebrado.jpg")
+	if err := os.WriteFile(broken, []byte("nao e imagem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, dir)
+	ids := choose(t, s, broken)
+
+	rec := get(t, s, "/api/thumb?f="+ids[0])
+	body := rec.Body.String()
+
+	if rec.Code == http.StatusOK {
+		t.Fatal("text is not an image; the thumbnail must fail")
+	}
+	if strings.Contains(body, dir) {
+		t.Errorf("the operator's directory reached the browser: %q", strings.TrimSpace(body))
+	}
+	if !strings.Contains(body, "quebrado.jpg") {
+		t.Errorf("the file name is what the operator needs and it is missing: %q", strings.TrimSpace(body))
 	}
 }

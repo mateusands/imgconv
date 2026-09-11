@@ -99,6 +99,14 @@ func Run(req Request) (Summary, error) {
 	if err := req.Limits.Validate(); err != nil {
 		return Summary{}, err
 	}
+	// The CLI already refuses a directory run without --outdir, so this only ever
+	// fires for a caller inside the module. It fires anyway: an empty OutputDir
+	// makes OutputPath fall back to the input's own directory, and the input here
+	// is a bare file name, so every result would land in whatever directory the
+	// process happens to be standing in.
+	if req.OutputDir == "" {
+		return Summary{}, fmt.Errorf("a directory run needs an output directory")
+	}
 
 	units, err := plan(req)
 	if err != nil {

@@ -1,6 +1,9 @@
-// The token arrives in the URL because the first request is a navigation and
-// cannot carry a header. It is read once and stripped from the address bar:
-// leaving it there puts the run's secret into history, bookmarks and screenshots.
+// The token arrives in the URL on the first visit and is stripped from the
+// address bar at once, so it never reaches history, a bookmark or a screenshot.
+// The server also set a cookie while serving this page, which is what makes a
+// reload work. Requests below still send the token in a header, and the thumbnail
+// sends it in its URL, because the cookie alone cannot tell one local port from
+// another.
 const token = new URLSearchParams(location.search).get("t") || "";
 history.replaceState(null, "", location.pathname);
 
@@ -53,24 +56,48 @@ function renderFiles(list) {
     img.className = "thumb";
     img.loading = "lazy";
     img.alt = "";
-    // An <img> cannot set a header, so the thumbnail carries the token in its URL.
-    // The id travels, never the path: the page is never told where the file lives.
+    // The token IS in this URL, on purpose. An <img> cannot set a header, and the
+    // cookie alone was not enough: a cookie belongs to a host and every port on
+    // 127.0.0.1 shares it, so a page from another local server could embed this
+    // same URL and be served. Sec-Fetch-Site closes that too; this is the half
+    // that does not depend on the browser sending a header.
     img.src = `/api/thumb?f=${encodeURIComponent(f.id)}&t=${encodeURIComponent(token)}`;
+
+    const label = document.createElement("span");
+    label.className = "label";
 
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = f.name;
 
-    const size = document.createElement("span");
-    size.className = "size";
-    size.textContent = humanSize(f.size);
+    // Format first, because it is the one that can contradict the file name: this
+    // program decides by bytes, so a .jpeg holding a PNG says PNG here and that
+    // is the only place the operator sees it before anything is written.
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    const bits = [];
+    if (f.format) bits.push(f.format.toUpperCase());
+    if (f.width && f.height) bits.push(`${f.width} × ${f.height}`);
+    bits.push(humanSize(f.size));
+    if (f.width && f.height) {
+      const mp = (f.width * f.height) / 1e6;
+      if (mp >= 0.1) bits.push(`${mp.toFixed(1)} MP`);
+    }
+    meta.textContent = bits.join("  ·  ");
+    if (!f.format) {
+      meta.classList.add("meta-unknown");
+      meta.textContent = `nao reconhecido  ·  ${humanSize(f.size)}`;
+      meta.title = "os bytes deste arquivo nao sao de uma imagem que este build conhece";
+    }
+
+    label.append(name, meta);
 
     const tick = document.createElement("span");
     tick.className = "tick";
     tick.setAttribute("aria-hidden", "true");
     tick.textContent = "\u2713";
 
-    row.append(img, name, size, tick);
+    row.append(img, label, tick);
     row.addEventListener("click", () => toggle(f.id, row));
 
     const drop = document.createElement("button");
@@ -225,7 +252,11 @@ function renderResults(results) {
     if (r.error) {
       li.className = "r-err";
       head.textContent = r.input;
-      detail.textContent = r.error;
+      // The server reports WHAT failed; naming the control that fixes it is this
+      // page's job, because the control only exists here.
+      detail.textContent = r.exists
+        ? `${r.error} — marque "Substituir arquivo existente" e converta de novo`
+        : r.error;
     } else {
       li.className = r.warning ? "r-warn" : "r-ok";
       head.textContent = `${r.input} → ${r.output}`;

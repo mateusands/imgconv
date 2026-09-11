@@ -82,18 +82,45 @@ func (l Limits) Validate() error {
 	return nil
 }
 
+// Header is what a file's header DECLARES, read without decoding a single pixel.
+//
+// Declared is the right word: these numbers come from the file and the file is
+// not trusted. They are safe to SHOW and never safe to allocate from — that is
+// what Limits is for, on the decode path.
+type Header struct {
+	Format string
+	Width  int
+	Height int
+}
+
+// Header describes a file cheaply enough to do it for every file in a list.
+//
+// Decode would allocate every pixel to learn two numbers, on the one screen where
+// a decode bomb is most likely to arrive by accident: a picker showing whatever
+// the operator selected. DecodeConfig reads the header and stops, so a file too
+// large to convert can still be described — and refused later, by Decode.
+func (s *Source) Header() (Header, error) {
+	if _, err := s.f.Seek(0, io.SeekStart); err != nil {
+		return Header{}, err
+	}
+	cfg, format, err := image.DecodeConfig(s.f)
+	if err != nil {
+		return Header{}, fmt.Errorf("%s: %w", s.path, err)
+	}
+	return Header{Format: format, Width: cfg.Width, Height: cfg.Height}, nil
+}
+
 // Sniff reports the format the bytes match, reading only the header. It is how a
 // caller asks "is this an image at all" without paying for a decode — a directory
 // run has to ask that of every file it finds.
 func (s *Source) Sniff() (string, error) {
-	if _, err := s.f.Seek(0, io.SeekStart); err != nil {
+	// Header answers a superset of this question from the same read, so asking it
+	// is cheaper than keeping a second copy of the same seek-and-decode in step.
+	head, err := s.Header()
+	if err != nil {
 		return "", err
 	}
-	_, format, err := image.DecodeConfig(s.f)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", s.path, err)
-	}
-	return format, nil
+	return head.Format, nil
 }
 
 // Decode reads the image and reports the format its BYTES matched, never its
@@ -108,6 +135,15 @@ func (s *Source) Decode(limits Limits) (image.Image, string, error) {
 	cfg, format, err := image.DecodeConfig(s.f)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", s.path, err)
+	}
+
+	// A floor as well as a ceiling. No decoder in the registry returns a negative
+	// dimension today — x/image/bmp normalises a negative height and then rejects
+	// it — so this guards a decoder that does not exist yet rather than a file
+	// that does. It costs two comparisons, and without it a negative product
+	// would sail under every limit below.
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, "", fmt.Errorf("%s: header declares %dx%d, which is not an image", s.path, cfg.Width, cfg.Height)
 	}
 
 	// int64 throughout: 60000*60000 overflows a 32-bit int, and an overflowed

@@ -29,6 +29,12 @@ type fileInfo struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Size int64  `json:"size"`
+
+	// Empty and zero when the header could not be read. The page shows nothing
+	// rather than guessing, and the conversion says why.
+	Format string `json:"format,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
 }
 
 type formatInfo struct {
@@ -59,6 +65,13 @@ type convertResult struct {
 	Output  string `json:"output,omitempty"`
 	Warning string `json:"warning,omitempty"`
 	Error   string `json:"error,omitempty"`
+
+	// Exists marks the one failure the operator can act on from this page, so the
+	// PAGE can say how. Sending the sentence from here would put interface
+	// language in Go, where it has no business being: the same error is a flag on
+	// a command line and a checkbox in a browser, and neither wording belongs to
+	// the layer that detected it.
+	Exists bool `json:"exists,omitempty"`
 }
 
 func (s *Server) routes() {
@@ -79,7 +92,10 @@ func (s *Server) routes() {
 func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	out := listingResponse{Files: []fileInfo{}, Formats: []formatInfo{}}
 	for _, e := range s.Files() {
-		out.Files = append(out.Files, fileInfo{ID: e.ID, Name: e.Name, Size: e.Size})
+		out.Files = append(out.Files, fileInfo{
+			ID: e.ID, Name: e.Name, Size: e.Size,
+			Format: e.Format, Width: e.Width, Height: e.Height,
+		})
 	}
 	for _, f := range imageio.Formats() {
 		if !f.CanEncode() {
@@ -107,19 +123,22 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 
 	src, err := imageio.Open(target)
 	if err != nil {
-		httpError(w, err, http.StatusNotFound)
+		// Every error out of this handler goes through browserMessage, not just
+		// the ones somebody remembered. imageio prefixes its errors with the
+		// absolute path, and this page is built to show none.
+		thumbError(w, err, target, http.StatusNotFound)
 		return
 	}
 	defer src.Close()
 
 	img, _, err := src.Decode(imageio.Limits{})
 	if err != nil {
-		httpError(w, err, http.StatusUnsupportedMediaType)
+		thumbError(w, err, target, http.StatusUnsupportedMediaType)
 		return
 	}
 	small, err := convert.Resize(img, convert.Options{Width: thumbWidth})
 	if err != nil {
-		httpError(w, err, http.StatusInternalServerError)
+		thumbError(w, err, target, http.StatusInternalServerError)
 		return
 	}
 
@@ -174,13 +193,9 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 func (s *Server) convertOne(name string, target imageio.Format, req convertRequest) convertResult {
 	res := convertResult{}
 
-	// The name is joined to the folder being browsed, and Resolve contains the
-	// result. A name carrying a separator is not a file the page showed, so it is
-	// refused before anything opens it.
-	if strings.ContainsAny(name, `/\`) {
-		res.Error = fmt.Sprintf("%s: a file name may not contain a path", name)
-		return res
-	}
+	// name is an id, not a path. Resolve looks it up in the allowlist and refuses
+	// anything that is not in it, whatever it is spelled like — there is no
+	// separator to screen for, because there is no path here to screen.
 	input, err := s.Resolve(name)
 	if err != nil {
 		// The id is all we have; naming it back is the only honest answer.
@@ -205,6 +220,7 @@ func (s *Server) convertOne(name string, target imageio.Format, req convertReque
 	res.Warning = out.Warning
 	if err != nil {
 		res.Error = browserMessage(err, input, output)
+		res.Exists = errors.Is(err, imageio.ErrExists)
 		return res
 	}
 	res.Output = filepath.Base(output)
@@ -257,6 +273,9 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	body := strings.Replace(string(page), "/*__STYLE__*/", string(css), 1)
 	body = strings.Replace(body, "/*__SCRIPT__*/", string(js), 1)
 
+	// Whoever is reading this already proved they hold the token, so hand it back
+	// in a cookie: a reload starts a request this page cannot add a header to.
+	s.setTokenCookie(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The page holds the run token; a cached copy of it outlives the run.
 	w.Header().Set("Cache-Control", "no-store")
@@ -290,6 +309,15 @@ func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
 		httpError(w, fmt.Errorf("use POST"), http.StatusMethodNotAllowed)
 		return
 	}
+	// One dialog at a time. Without this, repeated POSTs open a window each and
+	// hold an HTTP goroutine for up to pickTimeout apiece — and a stack of
+	// identical file choosers is not a thing any operator asked for.
+	if !s.claimPicker() {
+		httpError(w, fmt.Errorf("a file dialog is already open"), http.StatusConflict)
+		return
+	}
+	defer s.releasePicker()
+
 	s.mu.RLock()
 	pick := s.picker
 	s.mu.RUnlock()
@@ -298,7 +326,7 @@ func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	picked, err := pick()
+	picked, err := pick(s.StartDir())
 	if err != nil {
 		httpError(w, err, http.StatusNotImplemented)
 		return
@@ -331,13 +359,13 @@ func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// browserMessage turns an error into something this front end can show.
+// browserMessage reduces every path in an error to its file name.
 //
-// Two things have to happen and both are about the operator rather than the code.
-// An absolute path in the text puts their directory tree on screen, which is the
-// thing they asked to be rid of, so every path is reduced to its file name. And a
-// refusal to overwrite has to name the control THIS interface has: the checkbox,
-// never the command-line flag that means the same thing somewhere else.
+// An absolute path in the text puts the operator's directory tree on screen,
+// which is exactly what this front end was built not to do. What the message
+// does NOT do is tell them how to fix it: that sentence names a control, and
+// which control exists depends on which interface is reading — a flag here, a
+// checkbox there. The page says it, using the Exists flag.
 func browserMessage(err error, input, output string) string {
 	msg := err.Error()
 	for _, p := range []string{input, output, filepath.Dir(input), filepath.Dir(output)} {
@@ -345,9 +373,6 @@ func browserMessage(err error, input, output string) string {
 			msg = strings.ReplaceAll(msg, p+string(filepath.Separator), "")
 			msg = strings.ReplaceAll(msg, p, filepath.Base(p))
 		}
-	}
-	if errors.Is(err, imageio.ErrExists) {
-		msg += " (marque Substituir arquivo existente para trocar)"
 	}
 	return msg
 }
@@ -372,4 +397,11 @@ func (s *Server) handleQuit(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	s.Stop()
+}
+
+// thumbError is the only way a failure leaves handleThumb. It exists as its own
+// function so that adding a branch to that handler cannot quietly skip the
+// sanitising — which is exactly how the path leak got there.
+func thumbError(w http.ResponseWriter, err error, path string, code int) {
+	http.Error(w, browserMessage(err, path, ""), code)
 }

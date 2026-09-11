@@ -1,3 +1,5 @@
+// Fixture builders for this package's tests. No contract of its own: the specs
+// live at the top of the files that hold the tests.
 package go_test
 
 import (

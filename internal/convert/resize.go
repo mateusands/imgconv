@@ -23,7 +23,11 @@ func Resize(img image.Image, opts Options) (image.Image, error) {
 	}
 
 	src := img.Bounds()
-	if src.Dx() == 0 || src.Dy() == 0 {
+	// <= rather than ==: image.Rect canonicalises, so a standard decoder never
+	// hands over an inverted rectangle — but image.Image is an interface and a
+	// caller can implement it, and a negative Dx would reach derive as a negative
+	// base and come back out as a corrupted dimension.
+	if src.Dx() <= 0 || src.Dy() <= 0 {
 		return nil, fmt.Errorf("cannot resize an image with no pixels (%dx%d)", src.Dx(), src.Dy())
 	}
 

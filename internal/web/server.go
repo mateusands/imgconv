@@ -23,15 +23,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/mateusands/imgconv/internal/imageio"
 )
 
 // tokenHeader carries the run's token on API requests. The page itself receives
 // the token as a query parameter, because a browser navigating to a URL cannot
 // set a header; everything after that uses this.
 const tokenHeader = "X-Imgconv-Token"
+
+// cookiePrefix names the cookie that makes reloading work. The page receives the
+// token in the URL and strips it from the address bar, which left a plain F5 with
+// nothing to present.
+//
+// The PORT is appended to the name, and that is not cosmetic: a cookie is scoped
+// to a host and cannot be scoped to a port, so two runs on 127.0.0.1 would share
+// one cookie and the second would silently log the first one out.
+const cookiePrefix = "imgconv_token"
 
 // Server is one run of the web front end: one directory, one token, one listener.
 type Server struct {
@@ -57,8 +69,12 @@ type Server struct {
 	// what somebody clicked.
 	picked map[string]string
 	order  []string
-	nextID int
 	picker Picker
+
+	// picking is held for as long as a dialog is open. It is separate from mu
+	// because a dialog can stay open for minutes and mu guards data nobody should
+	// wait minutes for.
+	picking atomic.Bool
 }
 
 // Entry is one chosen file as the page sees it. The id is what travels, never the
@@ -68,6 +84,13 @@ type Entry struct {
 	ID   string
 	Name string
 	Size int64
+
+	// What the file's header declares. Zero values mean it could not be read —
+	// the file is listed anyway, because dropping something the operator chose
+	// would hide their own choice, and the conversion reports the real reason.
+	Format string
+	Width  int
+	Height int
 }
 
 // New prepares a server rooted at dir.
@@ -126,6 +149,21 @@ func mintToken() (string, error) {
 // to disk or logged.
 func (s *Server) Token() string { return s.token }
 
+// claimPicker reports whether this request may open a dialog, taking the claim if
+// so. releasePicker gives it back.
+func (s *Server) claimPicker() bool { return s.picking.CompareAndSwap(false, true) }
+func (s *Server) releasePicker()    { s.picking.Store(false) }
+
+// CookieName is the cookie this run uses, which carries the port so that two
+// runs on the same host do not overwrite each other.
+func (s *Server) CookieName() string {
+	_, port, err := net.SplitHostPort(s.Addr())
+	if err != nil || port == "" {
+		return cookiePrefix
+	}
+	return cookiePrefix + "_" + port
+}
+
 // StartDir is where the file dialog opens. It is a convenience, not a boundary:
 // the operator can choose anything from that dialog, and what bounds this server
 // is the allowlist below.
@@ -157,8 +195,14 @@ func (s *Server) Add(paths []string) []Entry {
 		if s.idOf(real) != "" {
 			continue
 		}
-		s.nextID++
-		id := strconv.Itoa(s.nextID)
+		// An unguessable id. Sequential ones made the allowlist enumerable: a
+		// caller that got past the guards could ask for "1" without ever having
+		// seen the list, which is the enumerable-key problem with a nicer name.
+		id, err := mintToken()
+		if err != nil {
+			continue
+		}
+		id = id[:24]
 		s.picked[id] = real
 		s.order = append(s.order, id)
 		s.startDir = filepath.Dir(real)
@@ -193,22 +237,31 @@ func (s *Server) Remove(id string) {
 
 // Files is the selection, in the order it was chosen.
 func (s *Server) Files() []Entry {
+	// The lock is held only long enough to copy the ids and paths. Describing a
+	// file opens it, and opening a file is not bounded work: a picked FIFO blocks
+	// os.Open forever, and doing that under the lock would take the whole server
+	// down with it — every Add and Remove would wait behind a read that never
+	// returns.
+	type picked struct{ id, path string }
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]Entry, 0, len(s.order))
+	snapshot := make([]picked, 0, len(s.order))
 	for _, id := range s.order {
-		path, ok := s.picked[id]
-		if !ok {
-			continue
+		if path, ok := s.picked[id]; ok {
+			snapshot = append(snapshot, picked{id: id, path: path})
 		}
-		e := Entry{ID: id, Name: filepath.Base(path)}
+	}
+	s.mu.RUnlock()
+
+	out := make([]Entry, 0, len(snapshot))
+	for _, p := range snapshot {
+		e := Entry{ID: p.id, Name: filepath.Base(p.path)}
 		// A file can be deleted or replaced between being picked and being listed.
 		// Reporting it with a zero size is honest; refusing to list it would hide
 		// a choice the operator made.
-		if info, err := os.Stat(path); err == nil {
+		if info, err := os.Stat(p.path); err == nil {
 			e.Size = info.Size()
 		}
+		e.Format, e.Width, e.Height = describe(p.path)
 		out = append(out, e)
 	}
 	return out
@@ -251,8 +304,19 @@ func (s *Server) Serve() error {
 			return err
 		}
 	}
+	// http.Serve has no timeouts at all: one client that opens a connection and
+	// never finishes a request would hold a goroutine for the life of the process.
+	// The write timeout is generous because a thumbnail decodes a real image, and
+	// there is no read timeout on the body for the same reason a pick can take
+	// minutes — a human is choosing.
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	failed := make(chan error, 1)
-	go func() { failed <- http.Serve(s.ln, s.Handler()) }()
+	go func() { failed <- srv.Serve(s.ln) }()
 
 	select {
 	case <-s.done:
@@ -284,6 +348,10 @@ func (s *Server) Close() error {
 // place that decides who may call is a second place that can be wrong.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.fetchSiteAllowed(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if !s.originAllowed(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -292,6 +360,15 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		// Cheap headers for a page that holds a token and lists someone's files.
+		// frame-ancestors is the one that matters: it stops any other page from
+		// putting this one in an iframe, which is the shape a click on a hostile
+		// page would have to take to reach a control here.
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -307,7 +384,29 @@ func (s *Server) tokenAllowed(r *http.Request) bool {
 	if given == "" {
 		given = r.URL.Query().Get("t")
 	}
+	if given == "" {
+		if c, err := r.Cookie(s.CookieName()); err == nil {
+			given = c.Value
+		}
+	}
 	return subtle.ConstantTimeCompare([]byte(given), []byte(s.token)) == 1
+}
+
+// setTokenCookie is called only after a request has already proved it holds the
+// token. It hands back the same value so the next request — a reload, a
+// thumbnail, anything the browser starts on its own — needs nothing in its URL.
+//
+// HttpOnly because nothing in the page has any reason to read it. Secure is
+// deliberately absent: this is http on loopback, and setting it would stop the
+// cookie from ever being sent.
+func (s *Server) setTokenCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.CookieName(),
+		Value:    s.token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 // originAllowed refuses a request that announces it came from somewhere else.
@@ -327,6 +426,28 @@ func (s *Server) originAllowed(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
+}
+
+// fetchSiteAllowed refuses a request the browser says came from somewhere else.
+//
+// It exists because the cookie cannot tell ports apart. A cookie belongs to a
+// HOST, and SameSite counts every port on 127.0.0.1 as the same site, so once
+// this page had a cookie any other local server's page could embed
+// <img src="http://127.0.0.1:ours/api/thumb?f=…"> and the browser would attach
+// it. An <img> sends no Origin, so the origin check saw nothing to refuse.
+//
+// Sec-Fetch-Site is sent by the BROWSER, not by the page, and it separates the
+// two cases nothing else could: "same-origin" is our own page, "none" is a typed
+// URL or a bookmark, and "same-site" is precisely the neighbouring port. An
+// absent header means a client too old to send one — or curl — and falls through
+// to the token and origin checks, which is where it was before this existed.
+func (s *Server) fetchSiteAllowed(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+		return true
+	default:
+		return false
+	}
 }
 
 // Resolve turns an id from the page into a path, or refuses it.
@@ -364,7 +485,7 @@ func Run(startDir string, out io.Writer) error {
 
 	fmt.Fprintf(out, "imgconv: the file dialog opens in %s\n", s.StartDir())
 	fmt.Fprintf(out, "imgconv: open %s\n", s.URL())
-	fmt.Fprintf(out, "imgconv: press ctrl+c to stop\n")
+	fmt.Fprintf(out, "imgconv: close this terminal to stop, or press ctrl+c\n")
 	openBrowser(s.URL())
 
 	return s.Serve()
@@ -383,4 +504,23 @@ func openBrowser(url string) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	_ = cmd.Start()
+}
+
+// describe reads what a file declares about itself, and says nothing when it
+// cannot. It goes through imageio because that is the only package allowed to
+// know what an image format is, and it reads the HEADER: decoding every file in
+// the list to print its dimensions would allocate every pixel of every picture
+// the operator selected.
+func describe(path string) (format string, w, h int) {
+	src, err := imageio.Open(path)
+	if err != nil {
+		return "", 0, 0
+	}
+	defer src.Close()
+
+	head, err := src.Header()
+	if err != nil {
+		return "", 0, 0
+	}
+	return head.Format, head.Width, head.Height
 }
