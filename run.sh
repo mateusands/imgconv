@@ -20,14 +20,57 @@ if [ ! -t 1 ] && [ -z "${IMGCONV_RELAUNCHED:-}" ]; then
 
   for term in konsole alacritty kitty foot wezterm gnome-terminal xfce4-terminal tilix terminator x-terminal-emulator xterm; do
     command -v "$term" >/dev/null 2>&1 || continue
-    # The flag that means "run this command" is different in every one of them,
-    # which is the only reason this is a case and not a loop with one variable.
+
+    # 🔴 NOT "&". That is the whole reason this looks the way it does.
+    #
+    # POSIX: in a script, a command started with & has SIGINT and SIGQUIT set to
+    # IGNORED — and that disposition is inherited. Backgrounding the terminal here
+    # gave konsole an ignored SIGINT, which it passed to the second run.sh, which
+    # passed it to imgconv. ctrl+c then did nothing at all, forever, and the window
+    # looked hung. Confirmed by reading SigIgn in /proc: 0x6, which is SIGINT and
+    # SIGQUIT together.
+    #
+    # "setsid --fork" forks on its own and returns immediately, so the terminal is
+    # detached and this script still exits at once — without an & anywhere. The
+    # desktop that launched us stops waiting for a window this script will never
+    # map, and the terminal owns its own lifetime from then on.
+    #
+    # The flag that means "run this command" differs in every emulator, which is
+    # the only reason this is a case and not one variable.
+    # Nested, because the two questions are not independent: asking whether setsid
+    # supports --fork only makes sense once setsid exists. Written flat, the second
+    # answer overwrote the first and a machine WITHOUT setsid ended up trying to
+    # run it — failing 127 with stderr on /dev/null, so a double-click did nothing
+    # and said nothing.
+    detach=""
+    if command -v setsid >/dev/null 2>&1; then
+      if setsid --help 2>&1 | grep -q -- "--fork"; then
+        detach="setsid --fork"
+      else
+        detach="setsid"
+      fi
+    fi
+
+    # With no setsid at all, BECOME the terminal instead. That costs the immediate
+    # exit — the desktop goes back to waiting for a window this script will never
+    # map — and it keeps ctrl+c working, which matters more. What it must never
+    # become is "&": that sets SIGINT to ignored for everything downstream.
+    if [ -z "$detach" ]; then
+      case "$term" in
+        gnome-terminal|tilix)  exec "$term" -- "$self" "$@" ;;
+        wezterm)               exec "$term" start -- "$self" "$@" ;;
+        kitty|foot)            exec "$term" "$self" "$@" ;;
+        *)                     exec "$term" -e "$self" "$@" ;;
+      esac
+    fi
+
     case "$term" in
-      gnome-terminal|tilix)  exec "$term" -- "$self" "$@" ;;
-      wezterm)               exec "$term" start -- "$self" "$@" ;;
-      kitty|foot)            exec "$term" "$self" "$@" ;;
-      *)                     exec "$term" -e "$self" "$@" ;;
+      gnome-terminal|tilix)  $detach "$term" -- "$self" "$@" >/dev/null 2>&1 ;;
+      wezterm)               $detach "$term" start -- "$self" "$@" >/dev/null 2>&1 ;;
+      kitty|foot)            $detach "$term" "$self" "$@" >/dev/null 2>&1 ;;
+      *)                     $detach "$term" -e "$self" "$@" >/dev/null 2>&1 ;;
     esac
+    exit 0
   done
   # No terminal emulator at all. Carry on rather than refusing: the URL still gets
   # printed, and ctrl+c is simply not available.
@@ -50,7 +93,7 @@ if ! go build -o imgconv ./cmd/imgconv; then
   exit 1
 fi
 
-echo "Close this window or press ctrl+c to stop imgconv."
+echo "Close this terminal to stop imgconv."
 echo
 
 # exec, so this shell is REPLACED by imgconv rather than waiting on it.
