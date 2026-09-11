@@ -1,9 +1,11 @@
 # imgconv
 
-A small command-line image converter written in Go. It converts between **JPEG, PNG, GIF, TIFF and BMP**
+*[Leia em português](README-pt-br.md)*
+
+A small image converter written in Go. It converts between **JPEG, PNG, GIF, TIFF and BMP**
 (and reads **WebP**), optionally resizing and setting JPEG quality — one file, or a whole directory
-in parallel. It has two front ends over one core: flags for scripting, and an interactive terminal UI
-when you run it with no arguments.
+in parallel. It has three front ends over one core: a graphical interface in your browser, a
+flag-driven command line for scripting, and an interactive terminal UI.
 
 It is built around one promise: **it never damages the file you gave it.**
 
@@ -43,8 +45,11 @@ chmod +x imgconv-*-linux-amd64
 ./imgconv-*-linux-amd64 --ui
 ```
 
-To double-click it instead, file managers need a launcher. Save this as
-`~/.local/share/applications/imgconv.desktop`, with the path corrected:
+Double-clicking works too, though some desktops will report the launcher as hung: they wait for a
+window to appear, and a command-line program opening a terminal never maps one of its own. It is
+cosmetic — the program runs, and closing the terminal stops it. To silence it, save this as
+`~/.local/share/applications/imgconv.desktop` with the path corrected and launch from your
+applications menu:
 
 ```ini
 [Desktop Entry]
@@ -52,6 +57,7 @@ Type=Application
 Name=imgconv
 Exec=/full/path/to/imgconv --ui
 Terminal=true
+StartupNotify=false
 Categories=Graphics;
 ```
 
@@ -108,14 +114,14 @@ imgconv                                  no arguments: the interactive terminal 
 
 ### The graphical interface
 
-`imgconv --ui` opens a page in your browser with the images in a folder, a format picker, quality and
+`imgconv --ui` opens a page in your browser with the files you chose, a format picker, quality and
 resize controls, and a button that opens your system's own file dialog. It converts the same way the
 command line does — same code, same guarantees — because a behaviour that differs between the two
 would be a bug.
 
 It listens on `127.0.0.1` only, and every request must carry a token generated fresh for that run, so
-nothing else on your machine or your network can reach it. With no argument it browses under your home
-directory; give it one (`imgconv --ui ~/Pictures`) to narrow that.
+nothing else on your machine or your network can reach it. The server can read only the files you
+picked in the dialog — there is no folder browsing, and the page never shows a path from your disk.
 
 ```bash
 imgconv photo.jpg -o photo.png            # convert one file
